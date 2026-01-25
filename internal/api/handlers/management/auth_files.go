@@ -51,6 +51,11 @@ const (
 	geminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
 )
 
+const (
+	managementModelStatesMetadataKey = "model_states"
+	managementModelDisabledMessage   = "disabled via management API"
+)
+
 type callbackForwarder struct {
 	provider string
 	server   *http.Server
@@ -805,6 +810,195 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+}
+
+// PatchAuthFileModels updates per-model status for an auth file (lookup by name or email).
+//
+// Request body:
+// PATCH /v0/management/auth-files/models
+//
+//	{
+//	  "name": "auth_file_name.json", // or auth id
+//	  "email": "user@example.com",   // optional alternative lookup
+//	  "models": {
+//	    "gemini-exp-1206": { "status": "disabled" }
+//	  }
+//	}
+func (h *Handler) PatchAuthFileModels(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	type modelPatch struct {
+		Status string `json:"status"`
+	}
+	var req struct {
+		Name   string                `json:"name"`
+		Email  string                `json:"email"`
+		Models map[string]modelPatch `json:"models"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	email := strings.TrimSpace(req.Email)
+	if name == "" && email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name or email is required"})
+		return
+	}
+	if len(req.Models) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "models is required"})
+		return
+	}
+
+	// Resolve targets (by name/id and/or email).
+	auths := h.authManager.List()
+	seen := make(map[string]struct{})
+	targetIDs := make([]string, 0, 1)
+	for _, a := range auths {
+		if a == nil || strings.TrimSpace(a.ID) == "" {
+			continue
+		}
+		if name != "" && a.ID != name && a.FileName != name {
+			continue
+		}
+		if email != "" && !strings.EqualFold(authEmail(a), email) {
+			continue
+		}
+		if _, ok := seen[a.ID]; ok {
+			continue
+		}
+		seen[a.ID] = struct{}{}
+		targetIDs = append(targetIDs, a.ID)
+	}
+
+	if len(targetIDs) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	now := time.Now()
+	reg := registry.GetGlobalRegistry()
+
+	updated := make([]gin.H, 0, len(targetIDs))
+	for _, id := range targetIDs {
+		targetAuth, ok := h.authManager.GetByID(id)
+		if !ok || targetAuth == nil {
+			continue
+		}
+		if targetAuth.ModelStates == nil {
+			targetAuth.ModelStates = make(map[string]*coreauth.ModelState)
+		}
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+
+		// Load persisted model_states map (if any), but keep it minimal (status + message only).
+		var persisted map[string]any
+		if raw, ok := targetAuth.Metadata[managementModelStatesMetadataKey]; ok && raw != nil {
+			if typed, ok2 := raw.(map[string]any); ok2 {
+				persisted = typed
+			} else {
+				tmp := make(map[string]any)
+				if b, errMarshal := json.Marshal(raw); errMarshal == nil {
+					if errUnmarshal := json.Unmarshal(b, &tmp); errUnmarshal == nil {
+						persisted = tmp
+					}
+				}
+			}
+		}
+		if persisted == nil {
+			persisted = make(map[string]any)
+		}
+
+		for modelID, patch := range req.Models {
+			model := strings.TrimSpace(modelID)
+			if model == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "model id is empty"})
+				return
+			}
+			rawStatus := strings.ToLower(strings.TrimSpace(patch.Status))
+			if rawStatus == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("status is required for model %s", model)})
+				return
+			}
+
+			var desired coreauth.Status
+			switch rawStatus {
+			case "disabled", "disable", "off":
+				desired = coreauth.StatusDisabled
+			case "active", "enabled", "enable", "on":
+				desired = coreauth.StatusActive
+			default:
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid status for model %s: %s", model, patch.Status)})
+				return
+			}
+
+			state := targetAuth.ModelStates[model]
+			if state == nil {
+				state = &coreauth.ModelState{Status: coreauth.StatusActive}
+				targetAuth.ModelStates[model] = state
+			}
+			state.Status = desired
+			state.UpdatedAt = now
+
+			if desired == coreauth.StatusDisabled {
+				state.StatusMessage = managementModelDisabledMessage
+				persisted[model] = map[string]any{
+					"status":         string(coreauth.StatusDisabled),
+					"status_message": managementModelDisabledMessage,
+				}
+				reg.SuspendClientModel(targetAuth.ID, model, "disabled")
+			} else {
+				if strings.EqualFold(strings.TrimSpace(state.StatusMessage), managementModelDisabledMessage) {
+					state.StatusMessage = ""
+				}
+				delete(persisted, model)
+				reg.ResumeClientModel(targetAuth.ID, model)
+			}
+		}
+
+		if len(persisted) == 0 {
+			delete(targetAuth.Metadata, managementModelStatesMetadataKey)
+		} else {
+			targetAuth.Metadata[managementModelStatesMetadataKey] = persisted
+		}
+
+		targetAuth.UpdatedAt = now
+		if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+			return
+		}
+
+		disabled := make(map[string]gin.H)
+		for model, st := range targetAuth.ModelStates {
+			if st == nil || st.Status != coreauth.StatusDisabled {
+				continue
+			}
+			disabled[model] = gin.H{
+				"status":         st.Status,
+				"status_message": st.StatusMessage,
+			}
+		}
+
+		displayName := strings.TrimSpace(targetAuth.FileName)
+		if displayName == "" {
+			displayName = targetAuth.ID
+		}
+		entry := gin.H{
+			"id":           targetAuth.ID,
+			"name":         displayName,
+			"email":        authEmail(targetAuth),
+			"model_states": disabled,
+		}
+		updated = append(updated, entry)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": updated})
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {

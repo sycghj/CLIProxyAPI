@@ -404,6 +404,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth.ID == "" {
 		auth.ID = uuid.NewString()
 	}
+	applyPersistedModelStates(auth)
 	auth.EnsureIndex()
 	m.mu.Lock()
 	m.auths[auth.ID] = auth.Clone()
@@ -419,6 +420,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if auth == nil || auth.ID == "" {
 		return nil, nil
 	}
+	applyPersistedModelStates(auth)
 	m.mu.Lock()
 	if existing, ok := m.auths[auth.ID]; ok && existing != nil && !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
@@ -449,6 +451,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		if auth == nil || auth.ID == "" {
 			continue
 		}
+		applyPersistedModelStates(auth)
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
 	}
@@ -1228,6 +1231,65 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 
 	m.hook.OnResult(ctx, result)
+}
+
+const persistedModelStatesMetadataKey = "model_states"
+
+type persistedModelState struct {
+	Status        Status `json:"status"`
+	StatusMessage string `json:"status_message,omitempty"`
+}
+
+// applyPersistedModelStates hydrates auth.ModelStates from auth.Metadata["model_states"].
+//
+// The filesystem store persists auth.Metadata as JSON. By writing a minimal "model_states"
+// object into metadata (status + message only), management toggles survive restarts while
+// keeping transient cooldown/error state in-memory only.
+func applyPersistedModelStates(auth *Auth) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	raw, ok := auth.Metadata[persistedModelStatesMetadataKey]
+	if !ok || raw == nil {
+		return
+	}
+
+	var parsed map[string]persistedModelState
+	data, errMarshal := json.Marshal(raw)
+	if errMarshal != nil {
+		return
+	}
+	if errUnmarshal := json.Unmarshal(data, &parsed); errUnmarshal != nil {
+		return
+	}
+	if len(parsed) == 0 {
+		return
+	}
+
+	now := time.Now()
+	for modelID, persisted := range parsed {
+		model := strings.TrimSpace(modelID)
+		if model == "" {
+			continue
+		}
+		// Only enforce explicit disables from persisted metadata.
+		if persisted.Status != StatusDisabled {
+			continue
+		}
+		state := ensureModelState(auth, model)
+		if state == nil {
+			continue
+		}
+		state.Status = StatusDisabled
+		if msg := strings.TrimSpace(persisted.StatusMessage); msg != "" {
+			state.StatusMessage = msg
+		} else if strings.TrimSpace(state.StatusMessage) == "" {
+			state.StatusMessage = "disabled via management API"
+		}
+		state.UpdatedAt = now
+	}
+
+	updateAggregatedAvailability(auth, now)
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
