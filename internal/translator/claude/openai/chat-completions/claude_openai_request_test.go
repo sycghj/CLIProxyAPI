@@ -243,3 +243,36 @@ func TestConvertOpenAIRequestToClaude_SystemOnlyInputKeepsFallbackUserMessage(t 
 		t.Fatalf("Expected fallback text %q, got %q", "", got)
 	}
 }
+
+func TestConvertOpenAIRequestToClaude_PreservesCacheControlOnTextParts(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-haiku-4-5-20251001",
+		"messages": [
+			{
+				"role": "system",
+				"content": [
+					{"type": "text", "text": "system rule", "cache_control": {"type": "ephemeral"}}
+				]
+			},
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "hello", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+				]
+			}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToClaude("claude-haiku-4-5-20251001", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+
+	if got := resultJSON.Get("system.0.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("Expected system cache_control.type %q, got %q", "ephemeral", got)
+	}
+	if got := resultJSON.Get("messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("Expected message cache_control.type %q, got %q", "ephemeral", got)
+	}
+	if got := resultJSON.Get("messages.0.content.0.cache_control.ttl").String(); got != "1h" {
+		t.Fatalf("Expected message cache_control.ttl %q, got %q", "1h", got)
+	}
+}

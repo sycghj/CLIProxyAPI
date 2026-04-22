@@ -37,13 +37,12 @@ type ToolCallAccumulator struct {
 }
 
 func calculateClaudeUsageTokens(usage gjson.Result) (promptTokens, completionTokens, totalTokens, cachedTokens int64) {
-	inputTokens := usage.Get("input_tokens").Int()
+	promptTokens = usage.Get("input_tokens").Int()
 	completionTokens = usage.Get("output_tokens").Int()
 	cachedTokens = usage.Get("cache_read_input_tokens").Int()
 	cacheCreationInputTokens := usage.Get("cache_creation_input_tokens").Int()
 
-	promptTokens = inputTokens + cacheCreationInputTokens + cachedTokens
-	totalTokens = promptTokens + completionTokens
+	totalTokens = promptTokens + completionTokens + cachedTokens + cacheCreationInputTokens
 
 	return promptTokens, completionTokens, totalTokens, cachedTokens
 }

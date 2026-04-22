@@ -23,8 +23,8 @@ func TestConvertClaudeResponseToOpenAI_StreamUsageIncludesCachedTokens(t *testin
 		t.Fatalf("expected 1 chunk, got %d", len(out))
 	}
 
-	if gotPromptTokens := gjson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
-		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
+	if gotPromptTokens := gjson.GetBytes(out[0], "usage.prompt_tokens").Int(); gotPromptTokens != 13 {
+		t.Fatalf("expected prompt_tokens %d, got %d", 13, gotPromptTokens)
 	}
 	if gotCompletionTokens := gjson.GetBytes(out[0], "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
@@ -43,8 +43,8 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCachedTokens(t *tes
 
 	out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
 
-	if gotPromptTokens := gjson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 22044 {
-		t.Fatalf("expected prompt_tokens %d, got %d", 22044, gotPromptTokens)
+	if gotPromptTokens := gjson.GetBytes(out, "usage.prompt_tokens").Int(); gotPromptTokens != 13 {
+		t.Fatalf("expected prompt_tokens %d, got %d", 13, gotPromptTokens)
 	}
 	if gotCompletionTokens := gjson.GetBytes(out, "usage.completion_tokens").Int(); gotCompletionTokens != 4 {
 		t.Fatalf("expected completion_tokens %d, got %d", 4, gotCompletionTokens)
