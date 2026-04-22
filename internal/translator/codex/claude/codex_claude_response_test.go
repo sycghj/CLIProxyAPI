@@ -317,3 +317,48 @@ func TestConvertCodexResponseToClaude_StreamEmptyOutputUsesOutputItemDoneMessage
 		t.Fatalf("expected fallback content from response.output_item.done message; outputs=%q", outputs)
 	}
 }
+
+func TestExtractResponsesUsage_DoesNotSubtractCachedTokensFromInput(t *testing.T) {
+	usage := gjson.Parse(`{"input_tokens":17512,"output_tokens":30,"input_tokens_details":{"cached_tokens":17500}}`)
+
+	inputTokens, outputTokens, cachedTokens := extractResponsesUsage(usage)
+
+	if inputTokens != 17512 {
+		t.Fatalf("expected input_tokens %d, got %d", 17512, inputTokens)
+	}
+	if outputTokens != 30 {
+		t.Fatalf("expected output_tokens %d, got %d", 30, outputTokens)
+	}
+	if cachedTokens != 17500 {
+		t.Fatalf("expected cached_tokens %d, got %d", 17500, cachedTokens)
+	}
+}
+
+func TestConvertCodexResponseToClaudeNonStream_PreservesOriginalInputTokensWithCachedUsage(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"messages":[]}`)
+	response := []byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_cached",
+			"model":"gpt-5.4-high",
+			"usage":{"input_tokens":17512,"output_tokens":30,"input_tokens_details":{"cached_tokens":17500}},
+			"output":[
+				{"type":"message","content":[{"type":"output_text","text":"ok"}]}
+			]
+		}
+	}`)
+
+	out := ConvertCodexResponseToClaudeNonStream(ctx, "", originalRequest, nil, response, nil)
+	parsed := gjson.ParseBytes(out)
+
+	if got := parsed.Get("usage.input_tokens").Int(); got != 17512 {
+		t.Fatalf("expected usage.input_tokens %d, got %d", 17512, got)
+	}
+	if got := parsed.Get("usage.output_tokens").Int(); got != 30 {
+		t.Fatalf("expected usage.output_tokens %d, got %d", 30, got)
+	}
+	if got := parsed.Get("usage.cache_read_input_tokens").Int(); got != 17500 {
+		t.Fatalf("expected usage.cache_read_input_tokens %d, got %d", 17500, got)
+	}
+}
