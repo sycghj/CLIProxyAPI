@@ -362,3 +362,77 @@ func TestConvertCodexResponseToClaudeNonStream_PreservesOriginalInputTokensWithC
 		t.Fatalf("expected usage.cache_read_input_tokens %d, got %d", 17500, got)
 	}
 }
+
+func TestConvertCodexResponseToClaude_StreamMessageStartEstimatesInputTokensForGPT54High(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"messages":[]}`)
+	requestRawJSON := []byte(`{
+		"model":"gpt-5.4-high",
+		"instructions":"You are a careful assistant.",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"Count the words in this sentence."}]}
+		]
+	}`)
+	chunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-high\"}}")
+
+	var param any
+	outputs := ConvertCodexResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)
+
+	messageStart := findAnthropicEvent(outputs, "message_start")
+	if !messageStart.Exists() {
+		t.Fatal("expected message_start event")
+	}
+	if got := messageStart.Get("message.usage.input_tokens").Int(); got <= 0 {
+		t.Fatalf("expected estimated non-zero message_start input_tokens, got %d", got)
+	}
+	if got := messageStart.Get("message.usage.output_tokens").Int(); got != 1 {
+		t.Fatalf("expected message_start output_tokens %d, got %d", 1, got)
+	}
+}
+
+func TestConvertCodexResponseToClaude_StreamMessageDeltaKeepsRealUsage(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"messages":[]}`)
+	requestRawJSON := []byte(`{
+		"model":"gpt-5.4-high",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+		]
+	}`)
+	chunks := [][]byte{
+		[]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-high\"}}"),
+		[]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":42,\"output_tokens\":9}}}"),
+	}
+
+	var param any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		outputs = append(outputs, ConvertCodexResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)...)
+	}
+
+	messageDelta := findAnthropicEvent(outputs, "message_delta")
+	if !messageDelta.Exists() {
+		t.Fatal("expected message_delta event")
+	}
+	if got := messageDelta.Get("usage.input_tokens").Int(); got != 42 {
+		t.Fatalf("expected final message_delta input_tokens %d, got %d", 42, got)
+	}
+	if got := messageDelta.Get("usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("expected final message_delta output_tokens %d, got %d", 9, got)
+	}
+}
+
+func findAnthropicEvent(outputs [][]byte, eventType string) gjson.Result {
+	for _, out := range outputs {
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			if payload.Get("type").String() == eventType {
+				return payload
+			}
+		}
+	}
+	return gjson.Result{}
+}
