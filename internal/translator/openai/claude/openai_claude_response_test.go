@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -107,4 +108,81 @@ func TestConvertOpenAIResponseToClaudeNonStream_MapsResponsesStyleCachedUsage(t 
 	if got := parsed.Get("usage.cache_read_input_tokens").Int(); got != 16000 {
 		t.Fatalf("expected usage.cache_read_input_tokens %d, got %d", 16000, got)
 	}
+}
+
+func TestConvertOpenAIResponseToClaude_StreamMessageStartEstimatesInputTokensForGPT54High(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"stream":true,"messages":[]}`)
+	requestRawJSON := []byte(`{
+		"model":"gpt-5.4-high",
+		"stream":true,
+		"messages":[
+			{"role":"system","content":"You are a careful assistant."},
+			{"role":"user","content":"Count the words in this sentence."}
+		]
+	}`)
+	chunk := []byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-5.4-high\",\"created\":1770000000,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Sure\"}}]}")
+
+	var param any
+	outputs := ConvertOpenAIResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)
+
+	messageStart := findAnthropicEvent(outputs, "message_start")
+	if !messageStart.Exists() {
+		t.Fatal("expected message_start event")
+	}
+	if got := messageStart.Get("message.usage.input_tokens").Int(); got <= 0 {
+		t.Fatalf("expected estimated non-zero message_start input_tokens, got %d", got)
+	}
+	if got := messageStart.Get("message.usage.output_tokens").Int(); got != 1 {
+		t.Fatalf("expected message_start output_tokens %d, got %d", 1, got)
+	}
+}
+
+func TestConvertOpenAIResponseToClaude_StreamMessageDeltaKeepsRealUsage(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"stream":true,"messages":[]}`)
+	requestRawJSON := []byte(`{
+		"model":"gpt-5.4-high",
+		"stream":true,
+		"messages":[
+			{"role":"user","content":"hello"}
+		]
+	}`)
+	chunks := [][]byte{
+		[]byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-5.4-high\",\"created\":1770000000,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}"),
+		[]byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-5.4-high\",\"created\":1770000000,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"),
+		[]byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-5.4-high\",\"created\":1770000000,\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":9,\"total_tokens\":51}}"),
+	}
+
+	var param any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		outputs = append(outputs, ConvertOpenAIResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)...)
+	}
+
+	messageDelta := findAnthropicEvent(outputs, "message_delta")
+	if !messageDelta.Exists() {
+		t.Fatal("expected message_delta event")
+	}
+	if got := messageDelta.Get("usage.input_tokens").Int(); got != 42 {
+		t.Fatalf("expected final message_delta input_tokens %d, got %d", 42, got)
+	}
+	if got := messageDelta.Get("usage.output_tokens").Int(); got != 9 {
+		t.Fatalf("expected final message_delta output_tokens %d, got %d", 9, got)
+	}
+}
+
+func findAnthropicEvent(outputs [][]byte, eventType string) gjson.Result {
+	for _, out := range outputs {
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			if payload.Get("type").String() == eventType {
+				return payload
+			}
+		}
+	}
+	return gjson.Result{}
 }
