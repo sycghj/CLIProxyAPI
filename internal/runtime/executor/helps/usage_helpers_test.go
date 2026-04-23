@@ -47,6 +47,51 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 	}
 }
 
+func TestParseClaudeUsageIncludesCachedTokensInTotal(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":12,"output_tokens":3,"cache_read_input_tokens":100}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 12)
+	}
+	if detail.OutputTokens != 3 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 3)
+	}
+	if detail.CachedTokens != 100 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 100)
+	}
+	if detail.TotalTokens != 115 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 115)
+	}
+}
+
+func TestParseClaudeUsageFallsBackToCreationTokensInTotal(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":12,"output_tokens":3,"cache_creation_input_tokens":100}}`)
+	detail := ParseClaudeUsage(data)
+	if detail.CachedTokens != 100 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 100)
+	}
+	if detail.TotalTokens != 115 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 115)
+	}
+}
+
+func TestParseClaudeStreamUsageIncludesCachedTokensInTotal(t *testing.T) {
+	line := []byte(`data: {"usage":{"input_tokens":12,"output_tokens":3,"cache_read_input_tokens":100}}`)
+	detail, ok := ParseClaudeStreamUsage(line)
+	if !ok {
+		t.Fatal("expected stream usage to parse")
+	}
+	if detail.InputTokens != 12 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 12)
+	}
+	if detail.CachedTokens != 100 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 100)
+	}
+	if detail.TotalTokens != 115 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 115)
+	}
+}
+
 func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	reporter := &UsageReporter{
 		provider:    "openai",
