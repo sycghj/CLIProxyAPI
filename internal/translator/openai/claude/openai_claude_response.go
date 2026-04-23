@@ -724,9 +724,18 @@ func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64) {
 		return 0, 0, 0
 	}
 
-	inputTokens := usage.Get("prompt_tokens").Int()
-	outputTokens := usage.Get("completion_tokens").Int()
-	cachedTokens := usage.Get("prompt_tokens_details.cached_tokens").Int()
+	inputNode := usage.Get("prompt_tokens")
+	if !inputNode.Exists() {
+		inputNode = usage.Get("input_tokens")
+	}
+	outputNode := usage.Get("completion_tokens")
+	if !outputNode.Exists() {
+		outputNode = usage.Get("output_tokens")
+	}
+	cachedNode := usage.Get("prompt_tokens_details.cached_tokens")
+	if !cachedNode.Exists() {
+		cachedNode = usage.Get("input_tokens_details.cached_tokens")
+	}
 
-	return inputTokens, outputTokens, cachedTokens
+	return inputNode.Int(), outputNode.Int(), cachedNode.Int()
 }
