@@ -10,7 +10,6 @@ import (
 	"context"
 	"strings"
 
-	executorhelps "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
@@ -75,7 +74,7 @@ type ToolCallAccumulator struct {
 //
 // Returns:
 //   - [][]byte: A slice of byte chunks, each containing an Anthropic-compatible JSON response.
-func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertOpenAIResponseToClaude(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertOpenAIResponseToAnthropicParams{
 			MessageID:                   "",
@@ -115,7 +114,7 @@ func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestR
 	if !streamResult.Exists() || (streamResult.Exists() && streamResult.Type == gjson.False) {
 		return convertOpenAINonStreamingToAnthropic(rawJSON)
 	} else {
-		return convertOpenAIStreamingChunkToAnthropic(requestRawJSON, rawJSON, (*param).(*ConvertOpenAIResponseToAnthropicParams))
+		return convertOpenAIStreamingChunkToAnthropic(originalRequestRawJSON, requestRawJSON, rawJSON, modelName, (*param).(*ConvertOpenAIResponseToAnthropicParams))
 	}
 }
 
@@ -130,7 +129,7 @@ func effectiveOpenAIFinishReason(param *ConvertOpenAIResponseToAnthropicParams) 
 }
 
 // convertOpenAIStreamingChunkToAnthropic converts OpenAI streaming chunk to Anthropic streaming events
-func convertOpenAIStreamingChunkToAnthropic(requestRawJSON, rawJSON []byte, param *ConvertOpenAIResponseToAnthropicParams) [][]byte {
+func convertOpenAIStreamingChunkToAnthropic(originalRequestRawJSON, requestRawJSON, rawJSON []byte, modelName string, param *ConvertOpenAIResponseToAnthropicParams) [][]byte {
 	root := gjson.ParseBytes(rawJSON)
 	var results [][]byte
 
@@ -153,10 +152,7 @@ func convertOpenAIStreamingChunkToAnthropic(requestRawJSON, rawJSON []byte, para
 			messageStartJSON := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
 			messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.id", param.MessageID)
 			messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.model", param.Model)
-			if estimatedInputTokens := estimateInitialClaudeMessageInputTokens(requestRawJSON); estimatedInputTokens > 0 {
-				messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.usage.input_tokens", estimatedInputTokens)
-				messageStartJSON, _ = sjson.SetBytes(messageStartJSON, "message.usage.output_tokens", 1)
-			}
+			messageStartJSON = translatorcommon.ApplyInitialClaudeMessageUsage(messageStartJSON, requestRawJSON, originalRequestRawJSON, param.Model, modelName)
 			results = append(results, translatorcommon.AppendSSEEventBytes(nil, "message_start", messageStartJSON, 2))
 			param.MessageStarted = true
 
@@ -722,25 +718,6 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 func ClaudeTokenCount(ctx context.Context, count int64) []byte {
 	return translatorcommon.ClaudeInputTokensJSON(count)
-}
-
-func estimateInitialClaudeMessageInputTokens(requestRawJSON []byte) int64 {
-	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(requestRawJSON, "model").String()))
-	if !strings.HasPrefix(model, "gpt-5.4-high") {
-		return 0
-	}
-
-	enc, err := executorhelps.TokenizerForModel(model)
-	if err != nil {
-		return 1
-	}
-
-	count, err := executorhelps.CountOpenAIChatTokens(enc, requestRawJSON)
-	if err != nil || count <= 0 {
-		return 1
-	}
-
-	return count
 }
 
 func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64) {

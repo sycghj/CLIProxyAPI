@@ -110,18 +110,18 @@ func TestConvertOpenAIResponseToClaudeNonStream_MapsResponsesStyleCachedUsage(t 
 	}
 }
 
-func TestConvertOpenAIResponseToClaude_StreamMessageStartEstimatesInputTokensForGPT54High(t *testing.T) {
+func TestConvertOpenAIResponseToClaude_StreamMessageStartEstimatesInputTokensForGPTModel(t *testing.T) {
 	ctx := context.Background()
 	originalRequest := []byte(`{"stream":true,"messages":[]}`)
 	requestRawJSON := []byte(`{
-		"model":"gpt-5.4-high",
+		"model":"gpt-4o",
 		"stream":true,
 		"messages":[
 			{"role":"system","content":"You are a careful assistant."},
 			{"role":"user","content":"Count the words in this sentence."}
 		]
 	}`)
-	chunk := []byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-5.4-high\",\"created\":1770000000,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Sure\"}}]}")
+	chunk := []byte("data: {\"id\":\"chatcmpl_1\",\"model\":\"gpt-4o\",\"created\":1770000000,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Sure\"}}]}")
 
 	var param any
 	outputs := ConvertOpenAIResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)

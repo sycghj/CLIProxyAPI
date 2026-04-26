@@ -11,7 +11,6 @@ import (
 	"context"
 	"strings"
 
-	executorhelps "github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/tidwall/gjson"
@@ -50,7 +49,7 @@ type ConvertCodexResponseToClaudeParams struct {
 //
 // Returns:
 //   - [][]byte: A slice of Claude Code-compatible JSON responses
-func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON []byte, rawJSON []byte, param *any) [][]byte {
+func ConvertCodexResponseToClaude(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON []byte, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &ConvertCodexResponseToClaudeParams{
 			HasToolCall: false,
@@ -79,12 +78,10 @@ func ConvertCodexResponseToClaude(_ context.Context, _ string, originalRequestRa
 
 	if typeStr == "response.created" {
 		template = []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"claude-opus-4-1-20250805","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0},"content":[],"stop_reason":null}}`)
-		template, _ = sjson.SetBytes(template, "message.model", rootResult.Get("response.model").String())
+		responseModel := rootResult.Get("response.model").String()
+		template, _ = sjson.SetBytes(template, "message.model", responseModel)
 		template, _ = sjson.SetBytes(template, "message.id", rootResult.Get("response.id").String())
-		if estimatedInputTokens := estimateInitialClaudeMessageInputTokens(requestRawJSON); estimatedInputTokens > 0 {
-			template, _ = sjson.SetBytes(template, "message.usage.input_tokens", estimatedInputTokens)
-			template, _ = sjson.SetBytes(template, "message.usage.output_tokens", 1)
-		}
+		template = translatorcommon.ApplyInitialClaudeMessageUsage(template, requestRawJSON, originalRequestRawJSON, responseModel, modelName)
 
 		output = translatorcommon.AppendSSEEventBytes(output, "message_start", template, 2)
 	} else if typeStr == "response.reasoning_summary_part.added" {
@@ -432,25 +429,6 @@ func buildReverseMapFromClaudeOriginalShortToOriginal(original []byte) map[strin
 
 func ClaudeTokenCount(_ context.Context, count int64) []byte {
 	return translatorcommon.ClaudeInputTokensJSON(count)
-}
-
-func estimateInitialClaudeMessageInputTokens(requestRawJSON []byte) int64 {
-	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(requestRawJSON, "model").String()))
-	if !strings.HasPrefix(model, "gpt-5.4-high") {
-		return 0
-	}
-
-	enc, err := executorhelps.TokenizerForModel(model)
-	if err != nil {
-		return 1
-	}
-
-	count, err := executorhelps.CountOpenAIChatTokens(enc, requestRawJSON)
-	if err != nil || count <= 0 {
-		return 1
-	}
-
-	return count
 }
 
 func finalizeCodexThinkingBlock(params *ConvertCodexResponseToClaudeParams) []byte {

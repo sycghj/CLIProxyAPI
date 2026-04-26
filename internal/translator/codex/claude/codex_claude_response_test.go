@@ -363,17 +363,17 @@ func TestConvertCodexResponseToClaudeNonStream_PreservesOriginalInputTokensWithC
 	}
 }
 
-func TestConvertCodexResponseToClaude_StreamMessageStartEstimatesInputTokensForGPT54High(t *testing.T) {
+func TestConvertCodexResponseToClaude_StreamMessageStartEstimatesInputTokensForGPTModel(t *testing.T) {
 	ctx := context.Background()
 	originalRequest := []byte(`{"messages":[]}`)
 	requestRawJSON := []byte(`{
-		"model":"gpt-5.4-high",
+		"model":"gpt-4o",
 		"instructions":"You are a careful assistant.",
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"Count the words in this sentence."}]}
 		]
 	}`)
-	chunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-high\"}}")
+	chunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-4o\"}}")
 
 	var param any
 	outputs := ConvertCodexResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)
@@ -384,6 +384,27 @@ func TestConvertCodexResponseToClaude_StreamMessageStartEstimatesInputTokensForG
 	}
 	if got := messageStart.Get("message.usage.input_tokens").Int(); got <= 0 {
 		t.Fatalf("expected estimated non-zero message_start input_tokens, got %d", got)
+	}
+	if got := messageStart.Get("message.usage.output_tokens").Int(); got != 1 {
+		t.Fatalf("expected message_start output_tokens %d, got %d", 1, got)
+	}
+}
+
+func TestConvertCodexResponseToClaude_StreamMessageStartFallsBackToOriginalRequestModel(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Count the words in this sentence."}]}`)
+	requestRawJSON := []byte(`{"input":[]}`)
+	chunk := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\",\"model\":\"claude-opus-4-1-20250805\"}}")
+
+	var param any
+	outputs := ConvertCodexResponseToClaude(ctx, "", originalRequest, requestRawJSON, chunk, &param)
+
+	messageStart := findAnthropicEvent(outputs, "message_start")
+	if !messageStart.Exists() {
+		t.Fatal("expected message_start event")
+	}
+	if got := messageStart.Get("message.usage.input_tokens").Int(); got <= 0 {
+		t.Fatalf("expected original request fallback input_tokens > 0, got %d", got)
 	}
 	if got := messageStart.Get("message.usage.output_tokens").Int(); got != 1 {
 		t.Fatalf("expected message_start output_tokens %d, got %d", 1, got)

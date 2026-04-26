@@ -50,7 +50,7 @@ var toolUseIDCounter uint64
 //
 // Returns:
 //   - [][]byte: A slice of bytes, each containing a Claude-compatible SSE payload.
-func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertGeminiResponseToClaude(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		*param = &Params{
 			IsGlAPIKey:       false,
@@ -82,14 +82,17 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 		// Create the initial message structure with default values
 		// This follows the Claude API specification for streaming message initialization
 		messageStartTemplate := []byte(`{"type":"message_start","message":{"id":"msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet-20241022","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+		responseModel := ""
 
 		// Override default values with actual response metadata if available
 		if modelVersionResult := gjson.GetBytes(rawJSON, "modelVersion"); modelVersionResult.Exists() {
-			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", modelVersionResult.String())
+			responseModel = modelVersionResult.String()
+			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.model", responseModel)
 		}
 		if responseIDResult := gjson.GetBytes(rawJSON, "responseId"); responseIDResult.Exists() {
 			messageStartTemplate, _ = sjson.SetBytes(messageStartTemplate, "message.id", responseIDResult.String())
 		}
+		messageStartTemplate = translatorcommon.ApplyInitialClaudeMessageUsage(messageStartTemplate, requestRawJSON, originalRequestRawJSON, responseModel, modelName)
 		appendEvent("message_start", string(messageStartTemplate))
 
 		(*param).(*Params).HasFirstResponse = true
